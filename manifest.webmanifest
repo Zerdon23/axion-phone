@@ -1,0 +1,14 @@
+{
+  "name": "Axion",
+  "short_name": "Axion",
+  "description": "Your AI agents, from your phone.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a0a12",
+  "theme_color": "#0a0a12",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "icon.png", "sizes": "256x256", "type": "image/png", "purpose": "any" }
+  ]
+}

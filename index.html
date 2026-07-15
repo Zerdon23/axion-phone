@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0a12" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Axion" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon.png" />
+<title>Axion</title>
+<style>
+  :root {
+    --bg: #0a0a12; --card: #14141f; --card2: #1b1b2a; --line: #26263a;
+    --text: #ececf3; --muted: #9a9ab0; --faint: #6a6a82;
+    --accent: #6d5efc; --accent2: #8a7dff; --good: #37d39a; --bad: #ff5c6c; --amber: #ffb547;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #app { max-width: 640px; margin: 0 auto; padding: 16px 16px 96px; }
+  h1 { font-size: 22px; margin: 8px 0 2px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-bottom: 12px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .between { justify-content: space-between; }
+  input, textarea, button { font: inherit; }
+  input, textarea {
+    width: 100%; background: var(--card2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 12px; padding: 13px 14px; margin-top: 8px; outline: none;
+  }
+  input:focus, textarea:focus { border-color: var(--accent); }
+  label { font-size: 13px; color: var(--muted); font-weight: 600; }
+  button {
+    background: var(--accent); color: #fff; border: none; border-radius: 12px;
+    padding: 13px 16px; font-weight: 650; cursor: pointer; width: 100%; font-size: 15px;
+  }
+  button:active { transform: translateY(1px); }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  button.small { width: auto; padding: 9px 14px; font-size: 13px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab { flex: 1; text-align: center; padding: 10px; border-radius: 12px; background: var(--card);
+    border: 1px solid var(--line); color: var(--muted); font-weight: 600; font-size: 14px; cursor: pointer; }
+  .tab.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .badge { font-size: 11px; font-weight: 700; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+  .b-requested { background: #2a2a1a; color: var(--amber); }
+  .b-building { background: #1a2233; color: var(--accent2); }
+  .b-done { background: #12281f; color: var(--good); }
+  .b-failed { background: #2a1519; color: var(--bad); }
+  .title { font-size: 15px; font-weight: 650; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .faint { color: var(--faint); font-size: 12px; }
+  .lane { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+  .lane:first-child { border-top: none; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .d-pending { background: var(--faint); } .d-working { background: var(--accent2); box-shadow: 0 0 0 4px rgba(138,125,255,.15); }
+  .d-done { background: var(--good); } .d-failed { background: var(--bad); }
+  .emoji { font-size: 16px; width: 22px; text-align: center; }
+  .fab { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(18px + env(safe-area-inset-bottom));
+    width: min(608px, calc(100% - 32px)); box-shadow: 0 8px 30px rgba(109,94,252,.4); }
+  .empty { text-align: center; color: var(--faint); padding: 40px 0; font-size: 14px; }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line);
+    border-top-color: var(--accent2); border-radius: 50%; animation: s .8s linear infinite; vertical-align: -2px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  .backlink { color: var(--accent2); font-size: 14px; background: none; border: none; width: auto; padding: 4px 0; text-align: left; }
+  .err { color: var(--bad); font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const $ = (h) => { const d = document.createElement('div'); d.innerHTML = h.trim(); return d.firstChild }
+const app = document.getElementById('app')
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+
+// ---- config (Turso creds live only in this phone's localStorage) ----
+const CFG_KEY = 'axion.cfg'
+function loadCfg() {
+  // Accept creds passed once via URL hash, then strip them from the address bar.
+  if (location.hash.length > 1) {
+    const p = new URLSearchParams(location.hash.slice(1))
+    if (p.get('url') && p.get('token')) {
+      localStorage.setItem(CFG_KEY, JSON.stringify({ url: p.get('url'), token: p.get('token') }))
+      history.replaceState(null, '', location.pathname + location.search)
+    }
+  }
+  try { return JSON.parse(localStorage.getItem(CFG_KEY)) } catch { return null }
+}
+let cfg = loadCfg()
+
+// ---- Turso ----
+async function sql(stmts) {
+  const host = cfg.url.replace(/^libsql:\/\//i, 'https://').replace(/\/+$/, '')
+  const res = await fetch(host + '/v2/pipeline', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + cfg.token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests: [...stmts.map(s => ({ type: 'execute', stmt: s })), { type: 'close' }] }),
+  })
+  if (!res.ok) throw new Error('Database error ' + res.status)
+  const body = await res.json()
+  const out = []
+  for (const r of body.results) {
+    if (r.type === 'error') throw new Error(r.error.message)
+    if (r.response?.result) out.push(r.response.result)
+  }
+  return out
+}
+const rows = (r) => r.rows.map(row => Object.fromEntries(r.cols.map((c, i) => [c.name, row[i]?.value ?? null])))
+const uid = () => 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
+
+// ---- screens ----
+function renderSetup(err) {
+  app.replaceChildren($(`
+    <div>
+      <h1>Connect Axion</h1>
+      <div class="sub">Paste the two values from your PC's Axion → Settings → This machine. They stay on this phone.</div>
+      <div class="card">
+        <label>Database URL</label>
+        <input id="u" placeholder="libsql://…turso.io" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        <label style="margin-top:14px;display:block">Auth token</label>
+        <input id="t" placeholder="eyJ…" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        ${err ? `<div class="err">${esc(err)}</div>` : ''}
+        <button style="margin-top:16px" id="go">Connect</button>
+      </div>
+    </div>`))
+  document.getElementById('go').onclick = async () => {
+    const url = document.getElementById('u').value.trim()
+    const token = document.getElementById('t').value.trim()
+    if (!url || !token) return renderSetup('Both fields are needed.')
+    cfg = { url, token }
+    try { await sql([{ sql: 'SELECT 1' }]); localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); route() }
+    catch (e) { cfg = null; renderSetup('Could not connect: ' + e.message) }
+  }
+}
+
+let tab = 'builds'
+let pollTimer = null
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+
+async function renderHome() {
+  stopPoll()
+  const shell = (inner) => $(`
+    <div>
+      <div class="row between"><h1>Axion</h1><button class="small ghost" id="reset">⚙︎</button></div>
+      <div class="sub">Your agents, from anywhere.</div>
+      <div class="tabs">
+        <div class="tab ${tab==='builds'?'on':''}" data-t="builds">Builds</div>
+        <div class="tab ${tab==='apps'?'on':''}" data-t="apps">Apps</div>
+      </div>
+      <div id="list">${inner}</div>
+    </div>`)
+  const view = shell('<div class="empty"><span class="spin"></span> loading…</div>')
+  app.replaceChildren(view)
+  view.querySelector('#reset').onclick = () => { if (confirm('Disconnect this phone?')) { localStorage.removeItem(CFG_KEY); cfg = null; route() } }
+  view.querySelectorAll('.tab').forEach(t => t.onclick = () => { tab = t.dataset.t; renderHome() })
+
+  const paint = async () => {
+    try {
+      if (tab === 'builds') {
+        const r = await sql([{ sql: `SELECT id,name,status,verify_summary,error,created_at FROM remote_builds ORDER BY created_at DESC LIMIT 40` }])
+        const list = rows(r[0])
+        document.getElementById('list').replaceChildren($(buildsHtml(list)))
+        bindBuilds(list)
+      } else {
+        const r = await sql([{ sql: `SELECT name,path FROM remote_apps ORDER BY name LIMIT 200` }])
+        document.getElementById('list').replaceChildren($(appsHtml(rows(r[0]))))
+      }
+    } catch (e) {
+      document.getElementById('list').replaceChildren($(`<div class="err">${esc(e.message)}</div>`))
+    }
+  }
+  await paint()
+  pollTimer = setInterval(paint, 4000)
+
+  if (tab === 'builds') {
+    const fab = $(`<button class="fab" id="new">+ New app</button>`)
+    view.appendChild(fab)
+    fab.onclick = renderNew
+  }
+}
+
+function statusBadge(s) { return `<span class="badge b-${esc(s)}">${s==='building'?'<span class="spin"></span> building':esc(s)}</span>` }
+
+function buildsHtml(list) {
+  if (!list.length) return `<div class="empty">No builds yet.<br>Tap “+ New app” to start one.</div>`
+  return `<div>${list.map(b => `
+    <div class="card" data-id="${esc(b.id)}" data-open="1" style="cursor:pointer">
+      <div class="row between">
+        <div class="title">${esc(b.name)}</div>
+        ${statusBadge(b.status)}
+      </div>
+      ${b.status==='done' && b.verify_summary ? `<div class="muted" style="margin-top:6px">${esc(b.verify_summary)}</div>`:''}
+      ${b.status==='failed' && b.error ? `<div class="err">${esc(b.error)}</div>`:''}
+    </div>`).join('')}</div>`
+}
+function bindBuilds(list) {
+  document.querySelectorAll('[data-open]').forEach(el => el.onclick = () => renderBuild(el.dataset.id, list.find(b => b.id === el.dataset.id)))
+}
+
+function appsHtml(list) {
+  if (!list.length) return `<div class="empty">No apps found on your PC yet.</div>`
+  return `<div>${list.map(a => `
+    <div class="card"><div class="title">${esc(a.name)}</div><div class="faint" style="margin-top:4px">${esc(a.path)}</div></div>`).join('')}</div>`
+}
+
+async function renderBuild(id, meta) {
+  stopPoll()
+  const view = $(`
+    <div>
+      <button class="backlink" id="back">‹ Builds</button>
+      <div class="row between" style="margin-top:6px"><h1 style="font-size:20px">${esc(meta?.name || 'Build')}</h1><span id="st"></span></div>
+      <div id="act" class="faint" style="margin:2px 0 14px"></div>
+      <div class="card" id="lanes"><div class="empty"><span class="spin"></span> loading…</div></div>
+    </div>`)
+  app.replaceChildren(view)
+  view.querySelector('#back').onclick = renderHome
+
+  const paint = async () => {
+    try {
+      const r = await sql([
+        { sql: `SELECT status,verify_summary,error FROM remote_builds WHERE id=?`, args: [{ type:'text', value:id }] },
+        { sql: `SELECT role,emoji,status,summary,seq FROM remote_build_agents WHERE build_id=? ORDER BY seq`, args: [{ type:'text', value:id }] },
+        { sql: `SELECT line FROM remote_build_activity WHERE build_id=?`, args: [{ type:'text', value:id }] },
+      ])
+      const b = rows(r[0])[0] || {}
+      const agents = rows(r[1])
+      const act = rows(r[2])[0]
+      document.getElementById('st').innerHTML = statusBadge(b.status || 'requested')
+      document.getElementById('act').textContent = act?.line || ''
+      const seen = {}
+      const lanes = agents.filter(a => { if (seen[a.role]) return false; seen[a.role] = 1; return true })
+      document.getElementById('lanes').replaceChildren($(lanesHtml(lanes, b)))
+      if (b.status === 'done' || b.status === 'failed') stopPoll()
+    } catch (e) {
+      document.getElementById('lanes').replaceChildren($(`<div class="err">${esc(e.message)}</div>`))
+    }
+  }
+  await paint()
+  pollTimer = setInterval(paint, 3000)
+}
+function lanesHtml(agents, b) {
+  let h = ''
+  if (!agents.length) h += `<div class="muted">Waiting for your PC to pick this up…<br><span class="faint">Make sure Axion is open on your computer.</span></div>`
+  h += agents.map(a => `
+    <div class="lane">
+      <span class="emoji">${esc(a.emoji||'•')}</span>
+      <div style="flex:1">
+        <div class="title" style="font-size:14px">${esc(a.role)}</div>
+        ${a.summary ? `<div class="faint">${esc(a.summary).slice(0,120)}</div>`:''}
+      </div>
+      <span class="dot d-${esc(a.status||'pending')}"></span>
+    </div>`).join('')
+  if (b.status === 'done' && b.verify_summary) h += `<div class="lane"><span class="emoji">✅</span><div class="muted">${esc(b.verify_summary)}</div></div>`
+  if (b.status === 'failed' && b.error) h += `<div class="lane"><span class="emoji">❌</span><div class="err" style="margin:0">${esc(b.error)}</div></div>`
+  return `<div>${h}</div>`
+}
+
+function renderNew() {
+  stopPoll()
+  const view = $(`
+    <div>
+      <button class="backlink" id="back">‹ Cancel</button>
+      <h1 style="font-size:20px;margin-top:6px">New app</h1>
+      <div class="sub">Describe it. Your PC builds it and you watch here.</div>
+      <div class="card">
+        <label>Name</label>
+        <input id="n" placeholder="Tip calculator" />
+        <label style="margin-top:14px;display:block">What should it do?</label>
+        <textarea id="d" rows="4" placeholder="A simple tip calculator where I enter a bill and pick a tip %."></textarea>
+        <div class="err" id="err" style="display:none"></div>
+        <button style="margin-top:16px" id="send">Send to my PC</button>
+      </div>
+    </div>`)
+  app.replaceChildren(view)
+  view.querySelector('#back').onclick = renderHome
+  view.querySelector('#send').onclick = async () => {
+    const name = document.getElementById('n').value.trim()
+    const desc = document.getElementById('d').value.trim()
+    if (!name) { const e = document.getElementById('err'); e.style.display='block'; e.textContent='Give it a name.'; return }
+    const now = new Date().toISOString()
+    try {
+      await sql([{
+        sql: `INSERT INTO remote_builds (id,name,description,status,device,created_at,updated_at) VALUES (?,?,?,'requested','phone',?,?)`,
+        args: [{type:'text',value:uid()},{type:'text',value:name},{type:'text',value:desc},{type:'text',value:now},{type:'text',value:now}],
+      }])
+      tab = 'builds'; renderHome()
+    } catch (e) {
+      const el = document.getElementById('err'); el.style.display='block'; el.textContent = e.message
+    }
+  }
+}
+
+function route() { if (!cfg) renderSetup(); else renderHome() }
+route()
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{})
+</script>
+</body>
+</html>
