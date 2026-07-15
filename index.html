@@ -10,6 +10,7 @@
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="apple-touch-icon" href="icon.png" />
 <title>Axion</title>
+<script src="jsQR.js"></script>
 <style>
   :root {
     --bg: #0a0a12; --card: #14141f; --card2: #1b1b2a; --line: #26263a;
@@ -67,6 +68,12 @@
   @keyframes s { to { transform: rotate(360deg); } }
   .backlink { color: var(--accent2); font-size: 14px; background: none; border: none; width: auto; padding: 4px 0; text-align: left; }
   .err { color: var(--bad); font-size: 13px; margin-top: 10px; }
+  .scan { position: fixed; inset: 0; background: #000; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .scan video { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
+  .scan .frame { position: relative; width: 66vw; max-width: 300px; aspect-ratio: 1; border: 3px solid #fff; border-radius: 20px; box-shadow: 0 0 0 100vmax rgba(0,0,0,.5); }
+  .scan .hint { position: absolute; bottom: 18%; color: #fff; font-size: 15px; text-align: center; padding: 0 24px; text-shadow: 0 1px 4px #000; }
+  .scan .x { position: absolute; top: calc(18px + env(safe-area-inset-top)); right: 18px; background: rgba(0,0,0,.5); color: #fff; border: none; border-radius: 999px; width: auto; padding: 10px 16px; }
+  .or { text-align: center; color: var(--faint); font-size: 12px; margin: 14px 0; }
 </style>
 </head>
 <body>
@@ -123,27 +130,92 @@ const rows = (r) => r.rows.map(row => Object.fromEntries(r.cols.map((c, i) => [c
 const uid = () => 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
 
 // ---- screens ----
+// Parse a scanned/typed setup string (a full link, its #hash, or bare params).
+function parseSetup(s) {
+  const h = s.includes('#') ? s.slice(s.indexOf('#') + 1) : s
+  try {
+    const p = new URLSearchParams(h)
+    const url = clean(p.get('url') || ''), token = clean(p.get('token') || '')
+    if (url && token) return { url, token }
+  } catch {}
+  return null
+}
+
+// Validate + save config, then go to the app. Shared by scan and manual entry.
+async function applyConfig(c, onErr) {
+  cfg = { url: clean(c.url), token: clean(c.token) }
+  try {
+    await sql([{ sql: 'SELECT 1' }])
+    localStorage.setItem(CFG_KEY, JSON.stringify(cfg))
+    route()
+  } catch (e) {
+    cfg = null
+    onErr ? onErr(e.message) : renderSetup(e.message)
+  }
+}
+
+async function startScan() {
+  if (typeof jsQR !== 'function') return renderSetup('Scanner could not load. Paste the values instead.')
+  const overlay = $(`
+    <div class="scan">
+      <video id="vid" playsinline muted></video>
+      <div class="frame"></div>
+      <div class="hint">Point at the QR code on your computer screen</div>
+      <button class="x" id="x">Cancel</button>
+    </div>`)
+  app.appendChild(overlay)
+  const video = document.getElementById('vid')
+  let stream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+  } catch (e) {
+    overlay.remove()
+    return renderSetup('Camera not available (' + e.message + '). You can paste the values instead.')
+  }
+  video.srcObject = stream
+  await video.play().catch(() => {})
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  let stop = false
+  const cleanup = () => { stop = true; stream.getTracks().forEach(t => t.stop()); overlay.remove() }
+  document.getElementById('x').onclick = () => { cleanup(); renderSetup() }
+  const tick = () => {
+    if (stop) return
+    if (video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth) {
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' })
+      const parsed = code && parseSetup(code.data)
+      if (parsed) { cleanup(); applyConfig(parsed); return }
+    }
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
+
 function renderSetup(err) {
   app.replaceChildren($(`
     <div>
       <h1>Connect Axion</h1>
-      <div class="sub">Paste the two values from your PC's Axion → Settings → This machine. They stay on this phone.</div>
+      <div class="sub">Set up this phone once. Everything stays on your phone.</div>
       <div class="card">
+        <button id="scan">📷 Scan the QR code</button>
+        <div class="or">— or type it in —</div>
         <label>Database URL</label>
         <input id="u" placeholder="libsql://…turso.io" autocapitalize="off" autocorrect="off" spellcheck="false" />
         <label style="margin-top:14px;display:block">Auth token</label>
         <input id="t" placeholder="eyJ…" autocapitalize="off" autocorrect="off" spellcheck="false" />
         ${err ? `<div class="err">${esc(err)}</div>` : ''}
-        <button style="margin-top:16px" id="go">Connect</button>
+        <button class="ghost" style="margin-top:16px" id="go">Connect</button>
       </div>
     </div>`))
-  document.getElementById('go').onclick = async () => {
+  document.getElementById('scan').onclick = startScan
+  document.getElementById('go').onclick = () => {
     const url = clean(document.getElementById('u').value)
     const token = clean(document.getElementById('t').value)
-    if (!url || !token) return renderSetup('Both fields are needed.')
-    cfg = { url, token }
-    try { await sql([{ sql: 'SELECT 1' }]); localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); route() }
-    catch (e) { cfg = null; renderSetup(e.message) }
+    if (!url || !token) return renderSetup('Both fields are needed — or just tap “Scan the QR code”.')
+    applyConfig({ url, token })
   }
 }
 

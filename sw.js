@@ -1,8 +1,8 @@
 // Minimal service worker — makes the app installable and lets the shell open
 // offline. Data is always fetched live from Turso (never cached), so the app
 // never shows stale build status.
-const SHELL = 'axion-shell-v2'
-const FILES = ['./', './index.html', './manifest.webmanifest', './icon.svg']
+const SHELL = 'axion-shell-v3'
+const FILES = ['./', './index.html', './manifest.webmanifest', './icon.svg', './jsQR.js']
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()))
