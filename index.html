@@ -83,7 +83,7 @@ function loadCfg() {
   if (location.hash.length > 1) {
     const p = new URLSearchParams(location.hash.slice(1))
     if (p.get('url') && p.get('token')) {
-      localStorage.setItem(CFG_KEY, JSON.stringify({ url: p.get('url'), token: p.get('token') }))
+      localStorage.setItem(CFG_KEY, JSON.stringify({ url: p.get('url').replace(/\s+/g,''), token: p.get('token').replace(/\s+/g,'') }))
       history.replaceState(null, '', location.pathname + location.search)
     }
   }
@@ -92,13 +92,24 @@ function loadCfg() {
 let cfg = loadCfg()
 
 // ---- Turso ----
+// Strip ALL whitespace — a token pasted on a phone often carries a stray space
+// or newline, and even one invisible character makes fetch throw a TypeError.
+const clean = (s) => String(s || '').replace(/\s+/g, '')
 async function sql(stmts) {
-  const host = cfg.url.replace(/^libsql:\/\//i, 'https://').replace(/\/+$/, '')
-  const res = await fetch(host + '/v2/pipeline', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + cfg.token, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requests: [...stmts.map(s => ({ type: 'execute', stmt: s })), { type: 'close' }] }),
-  })
+  const url = clean(cfg.url), token = clean(cfg.token)
+  const host = url.replace(/^libsql:\/\//i, 'https://').replace(/\/+$/, '')
+  let res
+  try {
+    res = await fetch(host + '/v2/pipeline', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests: [...stmts.map(s => ({ type: 'execute', stmt: s })), { type: 'close' }] }),
+    })
+  } catch (e) {
+    // fetch throws a TypeError on a bad header value or no network.
+    throw new Error('Could not reach the database. Check your connection and that the URL/token are correct (no spaces).')
+  }
+  if (res.status === 401) throw new Error('That token was not accepted. Copy it again exactly, or use the emailed link.')
   if (!res.ok) throw new Error('Database error ' + res.status)
   const body = await res.json()
   const out = []
@@ -127,12 +138,12 @@ function renderSetup(err) {
       </div>
     </div>`))
   document.getElementById('go').onclick = async () => {
-    const url = document.getElementById('u').value.trim()
-    const token = document.getElementById('t').value.trim()
+    const url = clean(document.getElementById('u').value)
+    const token = clean(document.getElementById('t').value)
     if (!url || !token) return renderSetup('Both fields are needed.')
     cfg = { url, token }
     try { await sql([{ sql: 'SELECT 1' }]); localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); route() }
-    catch (e) { cfg = null; renderSetup('Could not connect: ' + e.message) }
+    catch (e) { cfg = null; renderSetup(e.message) }
   }
 }
 
