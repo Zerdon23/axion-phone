@@ -3,7 +3,7 @@
 // never shows stale build status.
 // Bump on EVERY deploy. The shell is cache-first, so a stale version number
 // means phones keep serving the old app and the new one silently never arrives.
-const SHELL = 'axion-shell-v4'
+const SHELL = 'axion-shell-v5'
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon.svg', './jsQR.js']
 
 self.addEventListener('install', (e) => {

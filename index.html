@@ -474,9 +474,27 @@ async function renderPc() {
   q.value = pcFilter
   q.oninput = () => { pcFilter = q.value; paintLaunchers() }
 
+  // The PC only sweeps its windows every 30s to stay light on a machine that's
+  // usually mid-trade. Opening this tab is the moment it matters, so ask for a
+  // fresh look — quietly, no note, whether or not it lands.
+  let nudged = false
+  const nudge = async () => {
+    if (nudged || !pcDevice) return
+    nudged = true
+    const now = new Date().toISOString()
+    try {
+      await sql([{
+        sql: `INSERT INTO pc_commands (id,device,action,target,status,created_at,updated_at)
+              VALUES (?,?,'refresh','','requested',?,?)`,
+        args: [t(uid()), t(pcDevice), t(now), t(now)],
+      }])
+    } catch { /* the poll will catch up anyway */ }
+  }
+
   const go = async () => {
     try {
       await pcRefresh()
+      nudge()
     } catch (e) {
       // The helper creates these tables on first run. Say so plainly instead of
       // showing a raw SQL error.
