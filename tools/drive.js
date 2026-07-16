@@ -127,7 +127,13 @@ async function main() {
   }
 
   // Creds via the hash, exactly how his QR setup link works.
-  const url = `http://127.0.0.1:${PORT}/index.html#url=${encodeURIComponent(cfg.url)}&token=${encodeURIComponent(cfg.token)}`
+  // --live hits the deployed GitHub Pages site instead of the local copy: that's
+  // the thing he actually opens, and it exercises Pages + the service worker too.
+  const base = process.argv.includes('--live')
+    ? 'https://zerdon23.github.io/axion-phone/index.html'
+    : `http://127.0.0.1:${PORT}/index.html`
+  console.log('target:', base)
+  const url = `${base}#url=${encodeURIComponent(cfg.url)}&token=${encodeURIComponent(cfg.token)}`
   await cdp.send('Page.navigate', { url })
   await sleep(2500)
 
