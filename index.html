@@ -74,6 +74,25 @@
   .scan .hint { position: absolute; bottom: 18%; color: #fff; font-size: 15px; text-align: center; padding: 0 24px; text-shadow: 0 1px 4px #000; }
   .scan .x { position: absolute; top: calc(18px + env(safe-area-inset-top)); right: 18px; background: rgba(0,0,0,.5); color: #fff; border: none; border-radius: 999px; width: auto; padding: 10px 16px; }
   .or { text-align: center; color: var(--faint); font-size: 12px; margin: 14px 0; }
+  /* --- PC tab --- */
+  .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 650;
+    padding: 6px 11px; border-radius: 999px; background: var(--card2); color: var(--muted); }
+  .pill .dot { width: 7px; height: 7px; }
+  .pill.on { color: var(--good); } .pill.off { color: var(--amber); }
+  .sect { font-size: 12px; font-weight: 700; color: var(--faint); letter-spacing: .06em;
+    text-transform: uppercase; margin: 20px 2px 8px; }
+  .app { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+  .app:first-child { border-top: none; }
+  .app .meta { flex: 1; min-width: 0; }
+  .app .meta .title { font-size: 14px; }
+  .app .meta .faint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button.danger { background: transparent; border: 1px solid #46212a; color: var(--bad); }
+  button.tiny { width: auto; padding: 8px 13px; font-size: 13px; flex: none; }
+  .star { color: var(--accent2); font-size: 11px; }
+  .note { border-radius: 12px; padding: 11px 13px; font-size: 13px; margin-bottom: 12px; }
+  .note.wait { background: var(--card2); color: var(--muted); }
+  .note.good { background: #12281f; color: var(--good); }
+  .note.bad { background: #2a1519; color: var(--bad); }
 </style>
 </head>
 <body>
@@ -232,6 +251,7 @@ async function renderHome() {
       <div class="tabs">
         <div class="tab ${tab==='builds'?'on':''}" data-t="builds">Builds</div>
         <div class="tab ${tab==='apps'?'on':''}" data-t="apps">Apps</div>
+        <div class="tab ${tab==='pc'?'on':''}" data-t="pc">PC</div>
       </div>
       <div id="list">${inner}</div>
     </div>`)
@@ -239,6 +259,10 @@ async function renderHome() {
   app.replaceChildren(view)
   view.querySelector('#reset').onclick = () => { if (confirm('Disconnect this phone?')) { localStorage.removeItem(CFG_KEY); cfg = null; route() } }
   view.querySelectorAll('.tab').forEach(t => t.onclick = () => { tab = t.dataset.t; renderHome() })
+
+  // The PC tab owns its own DOM and polling: re-rendering the whole pane every
+  // few seconds would wipe out whatever is typed in its search box.
+  if (tab === 'pc') return renderPc()
 
   const paint = async () => {
     try {
@@ -287,6 +311,185 @@ function appsHtml(list) {
   if (!list.length) return `<div class="empty">No apps found on your PC yet.</div>`
   return `<div>${list.map(a => `
     <div class="card"><div class="title">${esc(a.name)}</div><div class="faint" style="margin-top:4px">${esc(a.path)}</div></div>`).join('')}</div>`
+}
+
+// ---- PC control ----------------------------------------------------------
+// Talks to the pc_* tables that the always-on helper on the PC owns
+// (Desktop\Claude\axion-pc-remote). The phone only ever WRITES a request and
+// READS what the PC mirrored back; it can't run anything directly, and it never
+// learns a file path — "open Quantower" is an id the PC looks up for itself.
+
+const t = (v) => ({ type: 'text', value: String(v) })
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+let pcNote = null      // {text, kind:'wait'|'good'|'bad'}
+let pcLaunchers = []
+let pcFilter = ''
+let pcShowAll = false
+
+/** A heartbeat older than 90s means nobody is home. */
+const pcOnline = (iso) => iso && (Date.now() - new Date(iso).getTime()) < 90000
+
+function agoText(iso) {
+  if (!iso) return 'never'
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
+  if (s < 60) return s + 's ago'
+  if (s < 3600) return Math.round(s / 60) + 'm ago'
+  return Math.round(s / 3600) + 'h ago'
+}
+
+function noteHtml() {
+  if (!pcNote) return ''
+  const spin = pcNote.kind === 'wait' ? '<span class="spin"></span> ' : ''
+  return `<div class="note ${pcNote.kind}">${spin}${esc(pcNote.text)}</div>`
+}
+function paintNote() {
+  const el = document.getElementById('pcnote')
+  if (el) el.innerHTML = noteHtml()
+}
+
+/**
+ * Send one request and wait for the PC to report back.
+ * The PC is the only thing that can say whether it worked, so we watch the row
+ * rather than optimistically claiming success.
+ */
+async function sendPc(device, action, target, label) {
+  const id = uid()
+  const now = new Date().toISOString()
+  pcNote = { text: (action === 'close' ? 'Closing ' : 'Opening ') + label + '…', kind: 'wait' }
+  paintNote()
+  try {
+    await sql([{
+      sql: `INSERT INTO pc_commands (id,device,action,target,status,created_at,updated_at)
+            VALUES (?,?,?,?,'requested',?,?)`,
+      args: [t(id), t(device), t(action), t(target), t(now), t(now)],
+    }])
+  } catch (e) {
+    pcNote = { text: e.message, kind: 'bad' }; paintNote(); return
+  }
+
+  for (let i = 0; i < 30; i++) {
+    await sleep(700)
+    let row
+    try {
+      const r = await sql([{ sql: `SELECT status,error FROM pc_commands WHERE id=?`, args: [t(id)] }])
+      row = rows(r[0])[0]
+    } catch { continue }
+    if (row?.status === 'done') {
+      pcNote = { text: (action === 'close' ? 'Closed ' : 'Opened ') + label, kind: 'good' }
+      paintNote(); await pcRefresh(); setTimeout(() => { pcNote = null; paintNote() }, 3500); return
+    }
+    if (row?.status === 'failed') {
+      pcNote = { text: row.error || 'It didn’t work.', kind: 'bad' }
+      paintNote(); setTimeout(() => { pcNote = null; paintNote() }, 5000); return
+    }
+  }
+  pcNote = { text: 'Your PC didn’t answer. Is it awake?', kind: 'bad' }
+  paintNote()
+}
+
+let pcDevice = null
+async function pcRefresh() {
+  const r = await sql([
+    { sql: `SELECT device, updated_at FROM pc_heartbeat ORDER BY updated_at DESC LIMIT 1` },
+    { sql: `SELECT device, pid, name, title FROM pc_windows ORDER BY name` },
+    { sql: `SELECT device, id, name, source FROM pc_launchers ORDER BY source, name` },
+  ])
+  const hb = rows(r[0])[0]
+  pcDevice = hb?.device || null
+  const wins = rows(r[1]).filter(w => !pcDevice || w.device === pcDevice)
+  pcLaunchers = rows(r[2]).filter(l => !pcDevice || l.device === pcDevice)
+
+  const st = document.getElementById('pcstatus')
+  if (st) {
+    const on = pcOnline(hb?.updated_at)
+    st.innerHTML = `<span class="pill ${on ? 'on' : 'off'}">
+      <span class="dot ${on ? 'd-done' : 'd-pending'}"></span>
+      ${on ? esc(pcDevice || 'PC') + ' online' : 'PC asleep · ' + agoText(hb?.updated_at)}</span>`
+  }
+  const openEl = document.getElementById('pcopen')
+  if (openEl) { openEl.replaceChildren($(openHtml(wins))); bindOpen(wins) }
+  paintLaunchers()
+}
+
+function openHtml(wins) {
+  if (!wins.length) return `<div class="card"><div class="muted">Nothing open right now.</div></div>`
+  return `<div class="card">${wins.map(w => `
+    <div class="app">
+      <div class="meta">
+        <div class="title">${esc(w.name)}</div>
+        <div class="faint">${esc(w.title)}</div>
+      </div>
+      <button class="tiny danger" data-close="${esc(w.pid)}" data-label="${esc(w.name)}">Close</button>
+    </div>`).join('')}</div>`
+}
+function bindOpen(wins) {
+  document.querySelectorAll('[data-close]').forEach(el => {
+    el.onclick = () => {
+      if (!confirm('Close ' + el.dataset.label + ' on your PC?\n\nIf it has unsaved work it will ask you on the PC.')) return
+      sendPc(pcDevice, 'close', el.dataset.close, el.dataset.label)
+    }
+  })
+}
+
+function paintLaunchers() {
+  const el = document.getElementById('pclaunch')
+  if (!el) return
+  const q = pcFilter.trim().toLowerCase()
+  let list = pcLaunchers.filter(l => !q || l.name.toLowerCase().includes(q))
+  // Without a search, lead with the Desktop shortcuts he actually curated.
+  const total = list.length
+  if (!q && !pcShowAll) list = list.slice(0, 10)
+
+  el.replaceChildren($(`
+    <div>
+      <div class="card">${list.length ? list.map(l => `
+        <div class="app">
+          <div class="meta"><div class="title">${esc(l.name)} ${l.source === 'desktop' ? '<span class="star">★</span>' : ''}</div></div>
+          <button class="tiny ghost" data-launch="${esc(l.id)}" data-label="${esc(l.name)}">Open</button>
+        </div>`).join('') : '<div class="muted">Nothing matches.</div>'}</div>
+      ${(!q && !pcShowAll && total > 10) ? `<button class="ghost small" id="more" style="width:100%">Show all ${total} apps</button>` : ''}
+    </div>`))
+
+  el.querySelectorAll('[data-launch]').forEach(b => {
+    b.onclick = () => sendPc(pcDevice, 'launch', b.dataset.launch, b.dataset.label)
+  })
+  const more = document.getElementById('more')
+  if (more) more.onclick = () => { pcShowAll = true; paintLaunchers() }
+}
+
+async function renderPc() {
+  const list = document.getElementById('list')
+  list.replaceChildren($(`
+    <div>
+      <div id="pcnote">${noteHtml()}</div>
+      <div id="pcstatus"><span class="pill"><span class="spin"></span> checking…</span></div>
+      <div class="sect">Open right now</div>
+      <div id="pcopen"><div class="empty"><span class="spin"></span> loading…</div></div>
+      <div class="sect">Open an app</div>
+      <input id="pcq" placeholder="Search your apps…" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <div id="pclaunch" style="margin-top:10px"></div>
+    </div>`))
+
+  const q = document.getElementById('pcq')
+  q.value = pcFilter
+  q.oninput = () => { pcFilter = q.value; paintLaunchers() }
+
+  const go = async () => {
+    try {
+      await pcRefresh()
+    } catch (e) {
+      // The helper creates these tables on first run. Say so plainly instead of
+      // showing a raw SQL error.
+      const missing = /no such table/i.test(e.message)
+      document.getElementById('pcopen').replaceChildren($(`<div class="card"><div class="muted">${
+        missing ? 'The PC helper isn’t set up yet. Run the installer once on your computer.' : esc(e.message)
+      }</div></div>`))
+      const st = document.getElementById('pcstatus')
+      if (st) st.innerHTML = `<span class="pill off"><span class="dot d-pending"></span> not connected</span>`
+    }
+  }
+  await go()
+  pollTimer = setInterval(go, 5000)
 }
 
 async function renderBuild(id, meta) {

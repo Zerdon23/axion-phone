@@ -1,7 +1,9 @@
 // Minimal service worker — makes the app installable and lets the shell open
 // offline. Data is always fetched live from Turso (never cached), so the app
 // never shows stale build status.
-const SHELL = 'axion-shell-v3'
+// Bump on EVERY deploy. The shell is cache-first, so a stale version number
+// means phones keep serving the old app and the new one silently never arrives.
+const SHELL = 'axion-shell-v4'
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon.svg', './jsQR.js']
 
 self.addEventListener('install', (e) => {
