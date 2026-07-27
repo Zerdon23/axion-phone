@@ -536,9 +536,39 @@ async function renderBuild(id, meta) {
       <div class="row between" style="margin-top:6px"><h1 style="font-size:20px">${esc(meta?.name || 'Build')}</h1><span id="st"></span></div>
       <div id="act" class="faint" style="margin:2px 0 14px"></div>
       <div class="card" id="lanes"><div class="empty"><span class="spin"></span> loading…</div></div>
+      <div id="changeForm" style="display:none">
+        <div class="sect">Ask for a change</div>
+        <div class="card">
+          <textarea id="chmsg" rows="3" placeholder="e.g. make the header blue · add an about section · change the phone number to…"></textarea>
+          <div class="err" id="cherr" style="display:none"></div>
+          <button style="margin-top:12px" id="chsend">Send the change to my PC</button>
+          <div class="faint" style="margin-top:8px">Your PC edits the app and updates the live site at the same link.</div>
+        </div>
+      </div>
+      <div id="changes"></div>
     </div>`)
   app.replaceChildren(view)
   view.querySelector('#back').onclick = renderHome
+
+  view.querySelector('#chsend').onclick = async () => {
+    const box = document.getElementById('chmsg')
+    const errEl = document.getElementById('cherr')
+    const msg = box.value.trim()
+    if (!msg) { errEl.style.display = 'block'; errEl.textContent = 'Describe the change first.'; return }
+    errEl.style.display = 'none'
+    const now = new Date().toISOString()
+    try {
+      await sql([{
+        sql: `INSERT INTO remote_changes (id,build_id,message,status,created_at,updated_at) VALUES (?,?,?,'requested',?,?)`,
+        args: [t(uid()), t(id), t(msg), t(now), t(now)],
+      }])
+      box.value = ''
+      paintChanges(id)
+    } catch (e) {
+      errEl.style.display = 'block'
+      errEl.textContent = e.message
+    }
+  }
 
   const paint = async () => {
     try {
@@ -564,7 +594,10 @@ async function renderBuild(id, meta) {
       const seen = {}
       const lanes = agents.filter(a => { if (seen[a.role]) return false; seen[a.role] = 1; return true })
       document.getElementById('lanes').replaceChildren($(lanesHtml(lanes, b)))
-      if (b.status === 'done' || b.status === 'failed') stopPoll()
+      const form = document.getElementById('changeForm')
+      if (form) form.style.display = b.status === 'done' ? '' : 'none'
+      await paintChanges(id)
+      // Keep polling on a done build — a requested change updates this screen.
     } catch (e) {
       document.getElementById('lanes').replaceChildren($(`<div class="err">${esc(e.message)}</div>`))
     }
@@ -572,6 +605,33 @@ async function renderBuild(id, meta) {
   await paint()
   pollTimer = setInterval(paint, 3000)
 }
+/** The change history for one build — newest first, with the agent's reply. */
+async function paintChanges(buildId) {
+  const el = document.getElementById('changes')
+  if (!el) return
+  let list = []
+  try {
+    const r = await sql([{
+      sql: `SELECT message,status,reply,created_at FROM remote_changes WHERE build_id=? ORDER BY created_at DESC LIMIT 10`,
+      args: [t(buildId)],
+    }])
+    list = rows(r[0])
+  } catch { return } // PC hasn't updated yet — just don't show the section
+  if (!list.length) { el.replaceChildren(); return }
+  const chip = (s) => s === 'working'
+    ? '<span class="badge b-building"><span class="spin"></span> working</span>'
+    : `<span class="badge b-${esc(s)}">${esc(s)}</span>`
+  el.replaceChildren($(`
+    <div>
+      <div class="sect">Changes</div>
+      ${list.map(c => `
+        <div class="card">
+          <div class="row between"><div class="title" style="font-size:13.5px">${esc(c.message)}</div>${chip(c.status)}</div>
+          ${c.reply ? `<div class="muted" style="margin-top:7px;white-space:pre-wrap">${esc(c.reply)}</div>` : ''}
+        </div>`).join('')}
+    </div>`))
+}
+
 function lanesHtml(agents, b) {
   let h = ''
   if (!agents.length) h += `<div class="muted">Waiting for your PC to pick this up…<br><span class="faint">Make sure Axion is open on your computer.</span></div>`
