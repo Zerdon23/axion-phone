@@ -93,6 +93,9 @@
   .note.wait { background: var(--card2); color: var(--muted); }
   .note.good { background: #12281f; color: var(--good); }
   .note.bad { background: #2a1519; color: var(--bad); }
+  a.btnlink { display: block; text-align: center; background: var(--accent); color: #fff;
+    border-radius: 12px; padding: 13px 16px; font-weight: 650; font-size: 15px; text-decoration: none; }
+  a.btnlink:active { transform: translateY(1px); }
 </style>
 </head>
 <body>
@@ -463,6 +466,9 @@ async function renderPc() {
     <div>
       <div id="pcnote">${noteHtml()}</div>
       <div id="pcstatus"><span class="pill"><span class="spin"></span> checking…</span></div>
+      <div class="sect">See &amp; control the screen</div>
+      <a class="btnlink" href="https://remotedesktop.google.com/access" target="_blank" rel="noopener">🖥 Control my screen</a>
+      <div class="faint" style="margin:8px 2px 0">Opens Remote Desktop — if you have the Chrome Remote Desktop app, use that instead for the smoothest control. Same Google account, same PIN.</div>
       <div class="sect">Open right now</div>
       <div id="pcopen"><div class="empty"><span class="spin"></span> loading…</div></div>
       <div class="sect">Open an app</div>
