@@ -270,8 +270,16 @@ async function renderHome() {
   const paint = async () => {
     try {
       if (tab === 'builds') {
-        const r = await sql([{ sql: `SELECT id,name,status,verify_summary,error,created_at FROM remote_builds ORDER BY created_at DESC LIMIT 40` }])
-        const list = rows(r[0])
+        // live_url is newer than some PC versions — fall back without it so an
+        // out-of-date PC can never break this tab.
+        let list
+        try {
+          const r = await sql([{ sql: `SELECT id,name,status,verify_summary,error,live_url,created_at FROM remote_builds ORDER BY created_at DESC LIMIT 40` }])
+          list = rows(r[0])
+        } catch {
+          const r = await sql([{ sql: `SELECT id,name,status,verify_summary,error,created_at FROM remote_builds ORDER BY created_at DESC LIMIT 40` }])
+          list = rows(r[0])
+        }
         document.getElementById('list').replaceChildren($(buildsHtml(list)))
         bindBuilds(list)
       } else {
@@ -303,11 +311,15 @@ function buildsHtml(list) {
         ${statusBadge(b.status)}
       </div>
       ${b.status==='done' && b.verify_summary ? `<div class="muted" style="margin-top:6px">${esc(b.verify_summary)}</div>`:''}
+      ${b.status==='done' && b.live_url ? `<a class="btnlink" data-live="1" href="${esc(b.live_url)}" target="_blank" rel="noopener" style="margin-top:10px">🌐 Open the live site</a>`:''}
       ${b.status==='failed' && b.error ? `<div class="err">${esc(b.error)}</div>`:''}
     </div>`).join('')}</div>`
 }
 function bindBuilds(list) {
   document.querySelectorAll('[data-open]').forEach(el => el.onclick = () => renderBuild(el.dataset.id, list.find(b => b.id === el.dataset.id)))
+  // The live-site link sits inside a clickable card — don't let a tap on the
+  // link ALSO open the build detail underneath the new tab.
+  document.querySelectorAll('[data-live]').forEach(a => a.addEventListener('click', (e) => e.stopPropagation()))
 }
 
 function appsHtml(list) {
@@ -530,11 +542,20 @@ async function renderBuild(id, meta) {
 
   const paint = async () => {
     try {
-      const r = await sql([
-        { sql: `SELECT status,verify_summary,error FROM remote_builds WHERE id=?`, args: [{ type:'text', value:id }] },
-        { sql: `SELECT role,emoji,status,summary,seq FROM remote_build_agents WHERE build_id=? ORDER BY seq`, args: [{ type:'text', value:id }] },
-        { sql: `SELECT line FROM remote_build_activity WHERE build_id=?`, args: [{ type:'text', value:id }] },
-      ])
+      let r
+      try {
+        r = await sql([
+          { sql: `SELECT status,verify_summary,error,live_url FROM remote_builds WHERE id=?`, args: [{ type:'text', value:id }] },
+          { sql: `SELECT role,emoji,status,summary,seq FROM remote_build_agents WHERE build_id=? ORDER BY seq`, args: [{ type:'text', value:id }] },
+          { sql: `SELECT line FROM remote_build_activity WHERE build_id=?`, args: [{ type:'text', value:id }] },
+        ])
+      } catch {
+        r = await sql([
+          { sql: `SELECT status,verify_summary,error FROM remote_builds WHERE id=?`, args: [{ type:'text', value:id }] },
+          { sql: `SELECT role,emoji,status,summary,seq FROM remote_build_agents WHERE build_id=? ORDER BY seq`, args: [{ type:'text', value:id }] },
+          { sql: `SELECT line FROM remote_build_activity WHERE build_id=?`, args: [{ type:'text', value:id }] },
+        ])
+      }
       const b = rows(r[0])[0] || {}
       const agents = rows(r[1])
       const act = rows(r[2])[0]
@@ -564,6 +585,8 @@ function lanesHtml(agents, b) {
       <span class="dot d-${esc(a.status||'pending')}"></span>
     </div>`).join('')
   if (b.status === 'done' && b.verify_summary) h += `<div class="lane"><span class="emoji">✅</span><div class="muted">${esc(b.verify_summary)}</div></div>`
+  if (b.status === 'done' && b.live_url) h += `<a class="btnlink" href="${esc(b.live_url)}" target="_blank" rel="noopener" style="margin-top:10px">🌐 Open the live site</a>
+    <div class="faint" style="margin-top:8px;text-align:center">This link works for anyone — send it to the customer.</div>`
   if (b.status === 'failed' && b.error) h += `<div class="lane"><span class="emoji">❌</span><div class="err" style="margin:0">${esc(b.error)}</div></div>`
   return `<div>${h}</div>`
 }
