@@ -651,34 +651,84 @@ function lanesHtml(agents, b) {
   return `<div>${h}</div>`
 }
 
+// The online dot per machine: a worker heartbeats every 60s, so 150s of
+// silence means it's asleep or Axion is closed there.
+const workerOnline = (iso) => iso && (Date.now() - new Date(iso).getTime()) < 150000
+
 function renderNew() {
   stopPoll()
+  let target = 'any'
+  let userPicked = false
   const view = $(`
     <div>
       <button class="backlink" id="back">‹ Cancel</button>
       <h1 style="font-size:20px;margin-top:6px">New app</h1>
-      <div class="sub">Describe it. Your PC builds it and you watch here.</div>
+      <div class="sub">Describe it. One of your computers builds it and you watch here.</div>
       <div class="card">
         <label>Name</label>
         <input id="n" placeholder="Tip calculator" />
         <label style="margin-top:14px;display:block">What should it do?</label>
         <textarea id="d" rows="4" placeholder="A simple tip calculator where I enter a bill and pick a tip %."></textarea>
+        <label style="margin-top:14px;display:block">Build it on</label>
+        <div class="tabs" id="machines" style="margin:8px 0 0">
+          <div class="tab on" data-m="any">⚡ Either</div>
+          <div class="tab" data-m="pc">🖥 PC <span id="dot-pc"></span></div>
+          <div class="tab" data-m="mac">🍎 Mac <span id="dot-mac"></span></div>
+        </div>
+        <div class="faint" id="mhint" style="margin-top:8px"></div>
         <div class="err" id="err" style="display:none"></div>
-        <button style="margin-top:16px" id="send">Send to my PC</button>
+        <button style="margin-top:16px" id="send">Start the build</button>
       </div>
     </div>`)
   app.replaceChildren(view)
   view.querySelector('#back').onclick = renderHome
+
+  const pick = (m) => {
+    target = m
+    view.querySelectorAll('#machines .tab').forEach(el => el.classList.toggle('on', el.dataset.m === m))
+  }
+  view.querySelectorAll('#machines .tab').forEach(el => el.onclick = () => { userPicked = true; pick(el.dataset.m) })
+
+  // Show which machines are actually awake right now.
+  ;(async () => {
+    try {
+      const r = await sql([{ sql: `SELECT device, updated_at FROM remote_workers` }])
+      for (const w of rows(r[0])) {
+        const dot = document.getElementById('dot-' + w.device)
+        if (dot) dot.innerHTML = `<span class="dot ${workerOnline(w.updated_at) ? 'd-done' : 'd-pending'}" style="display:inline-block;margin-left:4px"></span>`
+      }
+    } catch { /* older setup — no workers table yet */ }
+  })()
+
+  // iPhone apps need Xcode, which only the Mac has — steer those there.
+  const descEl = view.querySelector('#d')
+  descEl.oninput = () => {
+    const iosy = /\b(ios|iphone|ipad|watchos|swift|app store)\b/i.test(descEl.value)
+    document.getElementById('mhint').textContent = iosy
+      ? 'This sounds like an iPhone app — those need the Mac (it has Apple’s tools).'
+      : ''
+    if (iosy && !userPicked) pick('mac')
+  }
+
   view.querySelector('#send').onclick = async () => {
     const name = document.getElementById('n').value.trim()
     const desc = document.getElementById('d').value.trim()
     if (!name) { const e = document.getElementById('err'); e.style.display='block'; e.textContent='Give it a name.'; return }
     const now = new Date().toISOString()
+    const base = [t(uid()), t(name), t(desc), t(now), t(now)]
     try {
-      await sql([{
-        sql: `INSERT INTO remote_builds (id,name,description,status,device,created_at,updated_at) VALUES (?,?,?,'requested','phone',?,?)`,
-        args: [{type:'text',value:uid()},{type:'text',value:name},{type:'text',value:desc},{type:'text',value:now},{type:'text',value:now}],
-      }])
+      try {
+        await sql([{
+          sql: `INSERT INTO remote_builds (id,name,description,status,device,target,created_at,updated_at) VALUES (?,?,?,'requested','phone',?,?,?)`,
+          args: [base[0], base[1], base[2], t(target), base[3], base[4]],
+        }])
+      } catch {
+        // Older database without the target column — send it untargeted.
+        await sql([{
+          sql: `INSERT INTO remote_builds (id,name,description,status,device,created_at,updated_at) VALUES (?,?,?,'requested','phone',?,?)`,
+          args: base,
+        }])
+      }
       tab = 'builds'; renderHome()
     } catch (e) {
       const el = document.getElementById('err'); el.style.display='block'; el.textContent = e.message
