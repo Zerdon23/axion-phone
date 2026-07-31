@@ -253,6 +253,7 @@ async function renderHome() {
       <div class="sub">Your agents, from anywhere.</div>
       <div class="tabs">
         <div class="tab ${tab==='builds'?'on':''}" data-t="builds">Builds</div>
+        <div class="tab ${tab==='bots'?'on':''}" data-t="bots">Bots</div>
         <div class="tab ${tab==='apps'?'on':''}" data-t="apps">Apps</div>
         <div class="tab ${tab==='pc'?'on':''}" data-t="pc">PC</div>
       </div>
@@ -282,6 +283,13 @@ async function renderHome() {
         }
         document.getElementById('list').replaceChildren($(buildsHtml(list)))
         bindBuilds(list)
+      } else if (tab === 'bots') {
+        // ONE row holds every bot (see the bots-on-phone spec): a row per bot
+        // per minute would blow past the free write tier.
+        const r = await sql([{ sql: `SELECT data, updated_at FROM bot_snapshot WHERE id = 1` }])
+        const row = rows(r[0])[0]
+        document.getElementById('list').replaceChildren($(botsHtml(row)))
+        bindBots(row)
       } else {
         const r = await sql([{ sql: `SELECT name,path FROM remote_apps ORDER BY name LIMIT 200` }])
         document.getElementById('list').replaceChildren($(appsHtml(rows(r[0]))))
@@ -291,7 +299,18 @@ async function renderHome() {
     }
   }
   await paint()
-  pollTimer = setInterval(paint, 4000)
+  // the bots snapshot only changes once a minute — polling it every 4s would
+  // burn the phone's battery and the database's read quota for nothing
+  const every = tab === 'bots' ? 10000 : 4000
+  pollTimer = setInterval(paint, every)
+  // stop polling entirely while the app is in the background
+  if (!window._visBound) {
+    window._visBound = true
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) stopPoll()
+      else if (!pollTimer && cfg) route()
+    })
+  }
 
   if (tab === 'builds') {
     const fab = $(`<button class="fab" id="new">+ New app</button>`)
@@ -301,6 +320,126 @@ async function renderHome() {
 }
 
 function statusBadge(s) { return `<span class="badge b-${esc(s)}">${s==='building'?'<span class="spin"></span> building':esc(s)}</span>` }
+
+/* ---- Bots tab -----------------------------------------------------------
+   Read-only window onto the quant bots running on the PC. The PC publishes one
+   snapshot row a minute; charts live in bot_shots and are fetched only when a
+   trade is tapped, so this tab stays light on a bad signal. */
+const secsAgo = (s) => {
+  const d = Math.max(0, Math.floor(Date.now() / 1000) - Number(s || 0))
+  if (d < 60) return d + 's ago'
+  if (d < 3600) return Math.round(d / 60) + 'm ago'
+  return Math.round(d / 3600) + 'h ago'
+}
+const money0 = (n) => (n < 0 ? '-$' : '$') + Math.abs(Math.round(Number(n) || 0)).toLocaleString()
+const tone = (n) => `color:${Number(n) >= 0 ? 'var(--good)' : 'var(--bad)'}`
+const signed = (n, d = 1) => (Number(n) >= 0 ? '+' : '') + Number(n).toFixed(d)
+
+function positionLine(p) {
+  if (!p) return `<span style="color:var(--faint)">flat</span>`
+  const head = `<b style="color:${p.dir === 'long' ? 'var(--good)' : 'var(--bad)'}">${p.dir.toUpperCase()}</b> ${p.qty} @ ${p.entry}`
+  if (!p.taken) return `${head} <span style="color:var(--faint)">· shadow, no money at risk</span>`
+  if (p.pts == null) return head
+  return `${head} <span style="${tone(p.pts)}">${signed(p.pts)} pts (${money0(p.dollars)})${p.r != null ? ' · ' + signed(p.r, 2) + 'R' : ''}</span>`
+}
+
+function botsHtml(row) {
+  if (!row) return `<div class="empty">No bot data yet.<br>Open Axion Quant Bots on the PC — the first update lands within a minute.</div>`
+  let snap
+  try { snap = JSON.parse(row.data) } catch { return `<div class="err">Could not read the bot data.</div>` }
+  const age = Math.floor(Date.now() / 1000) - Number(row.updated_at || 0)
+  // the bots only run while the PC is on — say so rather than showing old
+  // numbers as though they were live
+  const stale = age > 180
+  const feed = snap.dataSource === 'rithmic'
+    ? `<span class="badge b-done">⚡ real-time</span>`
+    : `<span class="badge" style="background:#2a2410;color:var(--amber)">⚠ delayed</span>`
+  const head = `<div class="card">
+    <div class="row between">
+      <div class="title">${snap.combined.bots} bots running</div>
+      ${stale ? `<span class="badge b-failed">PC offline</span>` : feed}
+    </div>
+    <div class="muted" style="margin-top:6px">Equity <b>${money0(snap.combined.equity)}</b> · today <b style="${tone(snap.combined.dayPnl)}">${money0(snap.combined.dayPnl)}</b></div>
+    <div class="muted" style="margin-top:4px;color:var(--faint)">updated ${secsAgo(row.updated_at)}${stale ? ' — not live' : ''}</div>
+  </div>`
+  // in a trade first, then the ones that text him, then by today's P&L
+  const list = [...snap.bots].sort((a, b) =>
+    (b.position ? 1 : 0) - (a.position ? 1 : 0) || (b.notify - a.notify) || (b.dayPnl - a.dayPnl))
+  const cards = list.map(b => `
+    <div class="card" data-bot="${b.id}" style="cursor:pointer">
+      <div class="row between">
+        <div class="title">${b.notify ? '🔔 ' : ''}${esc(b.name)}</div>
+        <span class="muted" style="font-size:11px">${esc(b.instrument)} ${esc(b.timeframe)}</span>
+      </div>
+      <div style="margin-top:6px">${positionLine(b.position)}</div>
+      <div class="muted" style="margin-top:6px;font-size:12px">
+        ${money0(b.equity)} · today <span style="${tone(b.dayPnl)}">${money0(b.dayPnl)}</span> · ${b.trades} trades
+      </div>
+      <div class="botdetail" id="bd-${b.id}" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:8px"></div>
+    </div>`).join('')
+  return `<div>${head}${cards || '<div class="empty">No bots are running.</div>'}</div>`
+}
+
+// Which bot card is expanded. The list repaints every 10s, so without this the
+// card he is reading would snap shut under his thumb.
+let openBot = null
+
+function bindBots(row) {
+  if (!row) return
+  let snap
+  try { snap = JSON.parse(row.data) } catch { return }
+  const expand = (id) => {
+    const box = document.getElementById('bd-' + id)
+    if (!box) return
+    box.innerHTML = tradesHtml(snap.bots.find(b => b.id === id))
+    box.style.display = 'block'
+    box.querySelectorAll('[data-shot]').forEach(el => el.onclick = (ev) => { ev.stopPropagation(); loadShot(el) })
+  }
+  document.querySelectorAll('[data-bot]').forEach(card => {
+    card.onclick = (e) => {
+      if (e.target.closest('[data-shot]') || e.target.closest('.shotbox')) return
+      const id = Number(card.dataset.bot)
+      if (openBot === id) { openBot = null; document.getElementById('bd-' + id).style.display = 'none'; return }
+      openBot = id
+      expand(id)
+    }
+  })
+  if (openBot != null) expand(openBot)   // survive the repaint
+}
+
+function tradesHtml(bot) {
+  if (!bot || !bot.recent.length) return `<div class="muted" style="font-size:12px">No closed trades yet.</div>`
+  return bot.recent.map((t, i) => `
+    <div style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <div class="row between" data-shot="${esc(t.shotOut || t.shotIn || '')}" data-i="${i}" style="cursor:pointer">
+        <span style="font-size:13px">${t.dir.toUpperCase()} ${t.entry} → ${t.exit}
+          <span class="muted" style="font-size:11px">${esc(t.reason || '')}</span></span>
+        <span style="${tone(t.pnl)};font-weight:700">${money0(t.pnl)} <span style="font-weight:400;font-size:11px">${signed(t.pts)} pts</span></span>
+      </div>
+      <div class="shotbox" style="display:none;margin-top:6px"></div>
+    </div>`).join('')
+}
+
+// charts are fetched one at a time, on demand — never with the list
+async function loadShot(el) {
+  const name = el.dataset.shot
+  const box = el.parentElement.querySelector('.shotbox')
+  if (box.style.display === 'block') { box.style.display = 'none'; return }
+  box.style.display = 'block'
+  if (box.dataset.loaded) return
+  if (!name) { box.innerHTML = `<div class="muted" style="font-size:12px">No chart for this trade.</div>`; return }
+  box.innerHTML = `<div class="muted" style="font-size:12px"><span class="spin"></span> loading chart…</div>`
+  try {
+    const r = await sql([{ sql: `SELECT png FROM bot_shots WHERE name = '${name.replace(/'/g, "")}'` }])
+    const got = rows(r[0])[0]
+    box.innerHTML = got
+      ? `<img src="data:image/png;base64,${got.png}" style="width:100%;border-radius:8px;border:1px solid var(--line)">`
+      : `<div class="muted" style="font-size:12px">That chart is no longer stored (only the newest 20 are kept).</div>`
+    box.dataset.loaded = '1'
+  } catch (e) {
+    box.innerHTML = `<div class="err">${esc(e.message)}</div>`
+  }
+}
 
 function buildsHtml(list) {
   if (!list.length) return `<div class="empty">No builds yet.<br>Tap “+ New app” to start one.</div>`

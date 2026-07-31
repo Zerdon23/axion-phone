@@ -137,16 +137,43 @@ async function main() {
   await cdp.send('Page.navigate', { url })
   await sleep(2500)
 
-  // Straight to the PC tab.
-  await evalJs(`(() => { const t=[...document.querySelectorAll('.tab')].find(x=>x.dataset.t==='pc'); if(t) t.click(); return !!t })()`)
-  await sleep(3500)
-
   const shot = async (name) => {
     const r = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
     const f = path.join(OUT, name)
     fs.writeFileSync(f, Buffer.from(r.data, 'base64'))
     console.log('  shot ->', f)
   }
+
+  // --- Bots tab (node tools/drive.js --bots) -----------------------------
+  // Reads the live bot snapshot out of Turso through the real app, expands a
+  // card, and loads a chart — the three things that can each fail on their own.
+  if (process.argv.includes('--bots')) {
+    await evalJs(`(() => { const t=[...document.querySelectorAll('.tab')].find(x=>x.dataset.t==='bots'); if(t) t.click(); return !!t })()`)
+    await sleep(4000)
+    console.log('\n--- Bots tab as rendered in the browser ---')
+    console.log('header  :', await evalJs(`document.querySelector('#list .card')?.innerText.replace(/\\n/g,' | ')`))
+    const names = await evalJs(`[...document.querySelectorAll('[data-bot] .title')].map(e=>e.innerText.trim())`)
+    console.log('bots    :', names.length, '->', names.slice(0, 6).join(', '))
+    console.log('lines   :')
+    for (const l of await evalJs(`[...document.querySelectorAll('[data-bot]')].slice(0,5).map(c=>c.innerText.replace(/\\n/g,' · '))`)) console.log('   ', l)
+    await shot('bots-tab.png')
+
+    // expand the first bot, then open the first trade's chart
+    const opened = await evalJs(`(() => { const c=document.querySelector('[data-bot]'); if(!c) return false; c.click(); return true })()`)
+    await sleep(600)
+    console.log('\nexpanded a card:', opened, '| trades listed:', await evalJs(`document.querySelectorAll('[data-shot]').length`))
+    await evalJs(`(() => { const t=document.querySelector('[data-shot]'); if(t) t.click(); return !!t })()`)
+    await sleep(4000)
+    const img = await evalJs(`(() => { const i=document.querySelector('.shotbox img'); return i ? i.src.slice(0,30)+'… ('+Math.round(i.src.length/1024)+' KB)' : (document.querySelector('.shotbox')?.innerText||'nothing') })()`)
+    console.log('chart   :', img)
+    await shot('bots-chart.png')
+    console.log('\ndone')
+    process.exit(0)
+  }
+
+  // Straight to the PC tab.
+  await evalJs(`(() => { const t=[...document.querySelectorAll('.tab')].find(x=>x.dataset.t==='pc'); if(t) t.click(); return !!t })()`)
+  await sleep(3500)
 
   const dump = async () => ({
     status: await evalJs(`document.getElementById('pcstatus')?.innerText.trim()`),
